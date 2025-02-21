@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"net/http"
+
 	"strings"
 	"sync"
 
@@ -19,17 +20,19 @@ var (
 	mutex    sync.Mutex
 )
 
-func BroadCastMessage(conn *websocket.Conn, msgToSend string, msgType int) (err error) {
+func BroadCastMessage(conn *websocket.Conn, msgToSend string, msgType int, receiver string) (err error) {
 	msgToSend = strings.ReplaceAll(msgToSend, "\r\n", "")
+	log.Println(conn, connPool)
 	for client := range connPool {
 		if client != conn {
-			// msgToSend := connPool[conn] + ": " + string(msg)
-			if err := client.WriteMessage(msgType, []byte(msgToSend)); err != nil {
-				log.Println("error broadcasting message")
-				client.Close()
-				mutex.Lock()
-				delete(connPool, client)
-				mutex.Unlock()
+			if receiver == "" {
+				err = WriteMessageToClient(msgType, msgToSend, client)
+			} else {
+				log.Println(connPool[client], receiver, connPool[client] == receiver)
+				if connPool[client] == receiver {
+					err = WriteMessageToClient(msgType, msgToSend, client)
+					break
+				}
 			}
 
 		}
@@ -52,7 +55,7 @@ func HandleConnections(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Println("error reading message from the client")
 			msgToSend := connPool[conn] + ": Left the chat"
-			BroadCastMessage(conn, msgToSend, websocket.TextMessage)
+			BroadCastMessage(conn, msgToSend, websocket.TextMessage, "")
 			mutex.Lock()
 			delete(connPool, conn)
 			mutex.Unlock()
@@ -60,18 +63,43 @@ func HandleConnections(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if connPool[conn] != "" {
-			msgToSend := connPool[conn] + ": " + string(msg)
-			BroadCastMessage(conn, msgToSend, msgType)
+			message := strings.SplitN(string(msg), " ", 3)
+			msgToSend := ""
+			if message[0] != "/msg" {
+				msgToSend = connPool[conn] + ": " + string(msg)
+				BroadCastMessage(conn, msgToSend, msgType, "")
+			} else {
+				if len(message) == 3 {
+					receiever := message[1]
+					msgToSend = connPool[conn] + ": " + message[2]
+					BroadCastMessage(conn, msgToSend, msgType, receiever)
+				} else {
+					BroadCastMessage(conn, msgToSend, msgType, "")
+				}
+
+			}
 		} else {
 			mutex.Lock()
-			connPool[conn] = string(msg)
+			connPool[conn] = strings.ReplaceAll(string(msg), "\r\n", "")
 			mutex.Unlock()
 			msgToSend := connPool[conn] + ": has joined the chat"
-			BroadCastMessage(conn, msgToSend, websocket.TextMessage)
+			BroadCastMessage(conn, msgToSend, websocket.TextMessage, "")
 		}
 
 	}
 
+}
+
+func WriteMessageToClient(msgType int, msgToSend string, client *websocket.Conn) error {
+	if err := client.WriteMessage(msgType, []byte(msgToSend)); err != nil {
+		log.Println("error broadcasting message")
+		client.Close()
+		mutex.Lock()
+		delete(connPool, client)
+		mutex.Unlock()
+		return err
+	}
+	return nil
 }
 func main() {
 	http.HandleFunc("/ws", HandleConnections)
